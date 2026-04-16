@@ -1,0 +1,20 @@
+# Large artifacts — do NOT commit. Distribute separately (see README.md).
+data/
+checkpoints/
+results/
+logs/
+wandb/
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Env
+.env
+.venv/
+*.egg-info/

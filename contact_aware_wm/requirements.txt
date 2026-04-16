@@ -1,0 +1,13 @@
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+numpy==2.2.6
+pandas==2.3.3
+opencv-python==4.13.0.92
+scikit-image==0.25.2
+lpips==0.1.4
+matplotlib==3.10.8
+tqdm==4.67.3
+gdown==5.2.1
+scikit-video==1.1.11
+imageio==2.37.3
+scipy==1.15.3

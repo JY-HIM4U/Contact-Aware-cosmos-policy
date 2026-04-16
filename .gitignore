@@ -1,2 +1,27 @@
 /.cuda-name
 /build
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+.mypy_cache/
+.pytest_cache/
+
+# Data / model artifacts (too large for git)
+data/
+checkpoints/
+results/
+logs/
+wandb/
+outputs/
+*.pt
+*.pth
+*.ckpt
+
+# Env
+.env
+.venv/
+*.egg-info/
