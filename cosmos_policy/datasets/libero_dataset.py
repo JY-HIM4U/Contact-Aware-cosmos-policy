@@ -78,6 +78,9 @@ class LIBERODataset(Dataset):
         treat_success_rollouts_as_demos: bool = False,
         return_value_function_returns: bool = True,
         gamma: float = 0.99,
+        use_ft: bool = False,
+        ft_data_dir: str = "",
+        ft_stats_path: str = "",
     ):
         """
         Initialize LIBERO dataset for training.
@@ -123,6 +126,8 @@ class LIBERODataset(Dataset):
         self.treat_success_rollouts_as_demos = treat_success_rollouts_as_demos
         self.return_value_function_returns = return_value_function_returns
         self.gamma = gamma
+        self.use_ft = use_ft
+        self.ft_data_dir = ft_data_dir
 
         assert self.use_wrist_images or self.use_third_person_images, (
             "Must use at least one of wrist images or third-person images!"
@@ -216,6 +221,20 @@ class LIBERODataset(Dataset):
                         if self.return_value_function_returns:
                             returns = compute_monte_carlo_returns(num_steps, terminal_reward=1.0, gamma=self.gamma)
                         # Add entry to dataset dict
+                        # Load F/T data if available
+                        ft_wrist = None
+                        if self.use_ft and self.ft_data_dir:
+                            task_folder_raw = raw_file_string[:-10]  # strip "_demo.hdf5"
+                            npz_path = os.path.join(self.ft_data_dir, task_folder_raw, f"{demo_key}.npz")
+                            if os.path.exists(npz_path):
+                                ft_wrist = np.load(npz_path)["ft_wrist"].astype(np.float32)
+                                if len(ft_wrist) >= num_steps:
+                                    ft_wrist = ft_wrist[:num_steps]
+                                else:
+                                    ft_wrist = np.pad(ft_wrist, ((0, num_steps - len(ft_wrist)), (0, 0)), mode="edge")
+                            else:
+                                ft_wrist = np.zeros((num_steps, 6), dtype=np.float32)
+
                         self.data[self.num_episodes] = dict(
                             images=images,
                             wrist_images=wrist_images,
@@ -227,6 +246,7 @@ class LIBERODataset(Dataset):
                                 0
                             ],  # Task suite folder name (e.g. libero_spatial_no_noops_rerendered)
                             returns=returns.copy() if self.return_value_function_returns else None,
+                            ft=ft_wrist,
                         )
                         # Update number of episodes
                         self.num_episodes += 1
@@ -256,6 +276,39 @@ class LIBERODataset(Dataset):
                 self.data = rescale_data(self.data, self.dataset_stats, "actions")
             if self.normalize_proprio:
                 self.data = rescale_data(self.data, self.dataset_stats, "proprio")
+
+        # Normalize F/T to [-1, +1] using separate stats file
+        if self.use_ft:
+            import json as _json
+            _stats_file = ft_stats_path or os.path.join(self.ft_data_dir, "dataset_stats_all.json")
+            with open(_stats_file) as _f:
+                _ft_stats = _json.load(_f)
+            _ft_min = np.array(_ft_stats["ft_min"], dtype=np.float32)
+            _ft_max = np.array(_ft_stats["ft_max"], dtype=np.float32)
+            _denom = np.where((_ft_max - _ft_min) < 1e-8, 1.0, _ft_max - _ft_min)
+            for ep_idx in range(self.num_episodes):
+                ep = self.data[ep_idx]
+                if ep.get("ft") is not None:
+                    ep["ft"] = 2.0 * (ep["ft"] - _ft_min) / _denom - 1.0
+
+        # Filter out episodes whose commands don't match any T5 embedding
+        if hasattr(self, "t5_text_embeddings") and self.t5_text_embeddings:
+            valid_cmds = set(self.t5_text_embeddings.keys())
+            new_data = {}
+            new_idx = 0
+            removed = 0
+            for ep_idx in range(self.num_episodes):
+                if self.data[ep_idx]["command"] in valid_cmds:
+                    new_data[new_idx] = self.data[ep_idx]
+                    new_idx += 1
+                else:
+                    removed += 1
+            if removed:
+                self.data = new_data
+                self.num_episodes = new_idx
+                self.num_steps = sum(ep["num_steps"] for ep in self.data.values())
+                self._build_step_index_mapping()
+                print(f"[LIBERODataset] Filtered {removed} episodes without T5 match, {self.num_episodes} remain")
 
             # Calculate post-normalization action statistics
             self.dataset_stats_post_norm = load_or_compute_post_normalization_statistics(
@@ -600,6 +653,15 @@ class LIBERODataset(Dataset):
             current_proprio_latent_idx = current_sequence_idx
             current_sequence_idx += 1
 
+        # Add current F/T
+        current_ft_latent_idx = -1
+        if self.use_ft:
+            blank_image = np.zeros_like(decompressed_images[relative_step_idx])
+            blank_image = duplicate_array(blank_image, total_num_copies=self.num_duplicates_per_image)
+            image_list.append(blank_image)
+            current_ft_latent_idx = current_sequence_idx
+            current_sequence_idx += 1
+
         # Add wrist image if using wrist images
         if self.use_wrist_images:
             wrist_image = decompressed_wrist_images[relative_step_idx]
@@ -634,6 +696,15 @@ class LIBERODataset(Dataset):
             blank_image = duplicate_array(blank_image, total_num_copies=self.num_duplicates_per_image)
             image_list.append(blank_image)
             future_proprio_latent_idx = current_sequence_idx
+            current_sequence_idx += 1
+
+        # Add future F/T
+        future_ft_latent_idx = -1
+        if self.use_ft:
+            blank_image = np.zeros_like(decompressed_images[relative_step_idx])
+            blank_image = duplicate_array(blank_image, total_num_copies=self.num_duplicates_per_image)
+            image_list.append(blank_image)
+            future_ft_latent_idx = current_sequence_idx
             current_sequence_idx += 1
 
         # Add future wrist image
@@ -748,6 +819,18 @@ class LIBERODataset(Dataset):
             "value_function_return": value_function_return,
             "next_action_chunk": next_action_chunk,
             "next_value_function_return": next_value_function_return,
+            "current_ft": (
+                episode_data["ft"][relative_step_idx].copy()
+                if self.use_ft and episode_data.get("ft") is not None
+                else np.zeros(6, dtype=np.float32)
+            ),
+            "future_ft": (
+                episode_data["ft"][future_frame_idx].copy()
+                if self.use_ft and episode_data.get("ft") is not None
+                else np.zeros(6, dtype=np.float32)
+            ),
+            "current_ft_latent_idx": current_ft_latent_idx,
+            "future_ft_latent_idx": future_ft_latent_idx,
         }
 
         return sample_dict

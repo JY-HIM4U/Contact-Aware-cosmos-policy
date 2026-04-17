@@ -296,6 +296,10 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
             value_function_sample_mask=data_batch["value_function_sample_mask"],
             value_function_return=data_batch["value_function_return"],
             value_indices=data_batch["value_latent_idx"],
+            current_ft=data_batch.get("current_ft"),
+            current_ft_indices=data_batch.get("current_ft_latent_idx"),
+            future_ft=data_batch.get("future_ft"),
+            future_ft_indices=data_batch.get("future_ft_latent_idx"),
         )
 
         if self.loss_reduce == "mean":
@@ -328,6 +332,10 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
         value_function_sample_mask: torch.Tensor,
         value_function_return: torch.Tensor,
         value_indices: torch.Tensor,
+        current_ft: Optional[torch.Tensor] = None,
+        current_ft_indices: Optional[torch.Tensor] = None,
+        future_ft: Optional[torch.Tensor] = None,
+        future_ft_indices: Optional[torch.Tensor] = None,
     ):
         """
         NOTE (user): Modified to add action chunk prediction and future image prediction + action chunk loss logging.
@@ -401,6 +409,15 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
         x0_B_C_T_H_W[batch_indices, :, value_indices, :, :] = (
             value_function_return.reshape(-1, 1, 1, 1).expand(-1, C_latent, H_latent, W_latent).to(x0_B_C_T_H_W.dtype)
         )
+        # F/T (force/torque) injection — same mechanism as proprio
+        if current_ft_indices is not None and torch.all(current_ft_indices != -1):
+            x0_B_C_T_H_W = replace_latent_with_proprio(
+                x0_B_C_T_H_W, current_ft, proprio_indices=current_ft_indices,
+            )
+        if future_ft_indices is not None and torch.all(future_ft_indices != -1):
+            x0_B_C_T_H_W = replace_latent_with_proprio(
+                x0_B_C_T_H_W, future_ft, proprio_indices=future_ft_indices,
+            )
 
         # Get the mean and stand deviation of the marginal probability distribution.
         mean_B_C_T_H_W, std_B_T = self.sde.marginal_prob(x0_B_C_T_H_W, sigma_B_T)
@@ -472,6 +489,8 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
                     mask_B_T[world_batch_indices, future_wrist_image2_indices[world_batch_indices]] = 1
                 if torch.all(future_proprio_indices != -1):  # -1 indicates future proprio is not used
                     mask_B_T[world_batch_indices, future_proprio_indices[world_batch_indices]] = 1
+                if future_ft_indices is not None and torch.all(future_ft_indices != -1):
+                    mask_B_T[world_batch_indices, future_ft_indices[world_batch_indices]] = 1
             # Rollout value-function samples (rollout_data_mask == 1 and value_function_sample_mask == 1)
             value_idx_B = (
                 ((rollout_data_mask == 1) & (value_function_sample_mask == 1)).to(torch.long).to(sigma_B_T.device)
@@ -636,6 +655,29 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
             all_samples_future_proprio_mse_loss = torch.tensor(float("nan"), device=x0_B_C_T_H_W.device)
             all_samples_future_proprio_l1_loss = torch.tensor(float("nan"), device=x0_B_C_T_H_W.device)
 
+        # Get losses for future F/T prediction
+        if future_ft_indices is not None and torch.all(future_ft_indices != -1):
+            future_ft_diff = (
+                x0_B_C_T_H_W[batch_indices, :, future_ft_indices, :, :]
+                - model_pred.x0[batch_indices, :, future_ft_indices, :, :]
+            )
+            future_ft_diff_demo = future_ft_diff[rollout_data_mask == 0]
+            future_ft_diff_world_model = future_ft_diff[world_model_sample_mask == 1]
+            demo_sample_future_ft_mse_loss = (future_ft_diff_demo**2).mean()
+            demo_sample_future_ft_l1_loss = torch.abs(future_ft_diff_demo).mean()
+            world_model_sample_future_ft_mse_loss = (future_ft_diff_world_model**2).mean()
+            world_model_sample_future_ft_l1_loss = torch.abs(future_ft_diff_world_model).mean()
+            all_samples_future_ft_mse_loss = (future_ft_diff**2).mean()
+            all_samples_future_ft_l1_loss = torch.abs(future_ft_diff).mean()
+        else:
+            _nan = torch.tensor(float("nan"), device=x0_B_C_T_H_W.device)
+            demo_sample_future_ft_mse_loss = _nan
+            demo_sample_future_ft_l1_loss = _nan
+            world_model_sample_future_ft_mse_loss = _nan
+            world_model_sample_future_ft_l1_loss = _nan
+            all_samples_future_ft_mse_loss = _nan
+            all_samples_future_ft_l1_loss = _nan
+
         # Get losses for action prediction
         action_diff = (
             x0_B_C_T_H_W[batch_indices, :, action_indices, :, :] - model_pred.x0[batch_indices, :, action_indices, :, :]
@@ -696,6 +738,13 @@ class CosmosPolicyDiffusionModel(BaseDiffusionModel):
             # Value function sample losses
             "value_function_sample_value_mse_loss": value_function_sample_value_mse_loss,  # Main loss for value function
             "value_function_sample_value_l1_loss": value_function_sample_value_l1_loss,  # Main loss for value function
+            # F/T losses
+            "demo_sample_future_ft_mse_loss": demo_sample_future_ft_mse_loss,
+            "demo_sample_future_ft_l1_loss": demo_sample_future_ft_l1_loss,
+            "world_model_sample_future_ft_mse_loss": world_model_sample_future_ft_mse_loss,
+            "world_model_sample_future_ft_l1_loss": world_model_sample_future_ft_l1_loss,
+            "all_samples_future_ft_mse_loss": all_samples_future_ft_mse_loss,
+            "all_samples_future_ft_l1_loss": all_samples_future_ft_l1_loss,
         }
         return output_batch, kendall_loss, pred_mse_B_C_T_H_W, edm_loss_B_C_T_H_W
 

@@ -376,6 +376,24 @@ class CosmosPolicyVideo2WorldModel(CosmosPolicyDiffusionModel):
                 proprio_indices=data_batch["future_proprio_latent_idx"],
             )
 
+        # Manually add in current and future F/T to the condition.gt_frames
+        if "current_ft" in data_batch and data_batch.get("current_ft_latent_idx") is not None and torch.all(
+            data_batch["current_ft_latent_idx"] != -1
+        ):
+            condition.gt_frames = replace_latent_with_proprio(
+                condition.gt_frames,
+                data_batch["current_ft"],
+                proprio_indices=data_batch["current_ft_latent_idx"],
+            )
+        if "future_ft" in data_batch and data_batch.get("future_ft_latent_idx") is not None and torch.all(
+            data_batch["future_ft_latent_idx"] != -1
+        ):
+            condition.gt_frames = replace_latent_with_proprio(
+                condition.gt_frames,
+                data_batch["future_ft"],
+                proprio_indices=data_batch["future_ft_latent_idx"],
+            )
+
         # Manually add in value to the condition.gt_frames as well
         # (This is actually not needed for training because the value is not used as conditioning, but it may be useful
         # for visualizations when decoding the ground-truth latents to images)
