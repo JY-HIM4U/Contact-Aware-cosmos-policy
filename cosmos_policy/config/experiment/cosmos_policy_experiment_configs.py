@@ -586,6 +586,49 @@ cosmos_predict2_2b_480p_libero_smoke_vf = LazyDict(
 
 # ── M2: LIBERO-Spatial full LoRA training (V and V+F) ────────────────────────
 # 5 000 steps ≈ ~2 epochs over the 450-demo spatial dataset; checkpoints at 1k.
+# data_dir points directly to libero_spatial_regen/ to avoid picking up HDF5s
+# from other suites that may be present in the parent success_only/ directory.
+libero_spatial_dataset_m2 = L(LIBERODataset)(
+    data_dir=os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "libero_spatial_regen"),
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+)
+
+libero_spatial_dataset_m2_vf = L(LIBERODataset)(
+    data_dir=os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "libero_spatial_regen"),
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+    use_ft=True,
+    ft_data_dir=os.path.join(BASE_DATASETS_DIR, "libero_spatial_with_ft"),
+    ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_spatial_with_ft", "dataset_stats_all.json"),
+)
+
 # V baseline: no F/T
 cosmos_predict2_2b_480p_libero_m2_v = LazyDict(
     dict(
@@ -612,7 +655,7 @@ cosmos_predict2_2b_480p_libero_m2_v = LazyDict(
             num_workers=4,
             persistent_workers=True,
             pin_memory=True,
-            dataset=libero_spatial_dataset_smoke,
+            dataset=libero_spatial_dataset_m2,
             batch_size=1,
             drop_last=True,
         ),
@@ -654,7 +697,7 @@ cosmos_predict2_2b_480p_libero_m2_vf = LazyDict(
             num_workers=4,
             persistent_workers=True,
             pin_memory=True,
-            dataset=libero_spatial_dataset_smoke_vf,
+            dataset=libero_spatial_dataset_m2_vf,
             batch_size=1,
             drop_last=True,
         ),
