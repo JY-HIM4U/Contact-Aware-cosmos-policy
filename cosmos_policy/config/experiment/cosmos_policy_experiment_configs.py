@@ -538,8 +538,8 @@ libero_spatial_dataset_smoke_vf = L(LIBERODataset)(
     return_value_function_returns=True,
     gamma=0.99,
     use_ft=True,
-    ft_data_dir=os.path.join(BASE_DATASETS_DIR, "libero_90_with_ft_dummy"),
-    ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_90_with_ft_dummy", "dataset_stats_all.json"),
+    ft_data_dir=os.path.join(BASE_DATASETS_DIR, "libero_spatial_with_ft"),
+    ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_spatial_with_ft", "dataset_stats_all.json"),
 )
 cosmos_predict2_2b_480p_libero_smoke_vf = LazyDict(
     dict(
@@ -583,6 +583,90 @@ cosmos_predict2_2b_480p_libero_smoke_vf = LazyDict(
 )
 
 
+
+# ── M2: LIBERO-Spatial full LoRA training (V and V+F) ────────────────────────
+# 5 000 steps ≈ ~2 epochs over the 450-demo spatial dataset; checkpoints at 1k.
+# V baseline: no F/T
+cosmos_predict2_2b_480p_libero_m2_v = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=5000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero_spatial_dataset_smoke,
+            batch_size=1,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_m2_v",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+# V+F: real F/T from libero_spatial_with_ft
+cosmos_predict2_2b_480p_libero_m2_vf = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=5000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero_spatial_dataset_smoke_vf,
+            batch_size=1,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_m2_vf",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -601,6 +685,9 @@ def register_configs():
         # Contact-Aware (M1b smoke tests)
         cosmos_predict2_2b_480p_libero_smoke_v,
         cosmos_predict2_2b_480p_libero_smoke_vf,
+        # Contact-Aware (M2 full 5k-step runs)
+        cosmos_predict2_2b_480p_libero_m2_v,
+        cosmos_predict2_2b_480p_libero_m2_vf,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")

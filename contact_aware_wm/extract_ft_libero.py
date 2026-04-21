@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Extract simulated F/T readings from LIBERO-90 by replaying demonstrations.
+Extract simulated F/T readings from LIBERO demos by replaying demonstrations.
 
 LIBERO's MuJoCo XML defines sensors:
   - gripper0_force_ee:  (3,) — end-effector force [Fx, Fy, Fz]
@@ -11,61 +11,83 @@ These are read from env.sim.data.sensordata (shape (6,)) at each timestep.
 For each demo HDF5, replays the recorded states (not actions — faster and exact)
 and extracts F/T at each timestep. Also extracts joint torques as an alternative.
 
+Supports both libero_90 (all 90 tasks) and the 4 individual suites
+(libero_spatial, libero_10, libero_goal, libero_object). For individual suites,
+--hdf5_dir should point to the per-suite data dir (e.g., libero_spatial_regen/).
+Images in HDF5 may be stored as raw RGB (obs/agentview_rgb) or JPEG-encoded
+bytes (obs/agentview_rgb_jpeg); both are handled automatically.
+
 Output format:
-  libero_90_with_ft/
+  {output_dir}/
     {task_name}/
       demo_{i}.npz — {images, actions, ft_wrist, joint_torques, ee_pos, ee_ori}
 
 Usage:
-    # LIBERO-Spatial only (10 tasks × 50 demos)
-    python extract_ft_libero.py --suite spatial
+    # LIBERO-Spatial only using per-suite data dir
+    python extract_ft_libero.py --suite libero_spatial \\
+        --hdf5_dir ~/data/LIBERO-Cosmos-Policy/success_only/libero_spatial_regen \\
+        --output_dir ~/data/libero_spatial_with_ft
 
-    # All 90 tasks
-    python extract_ft_libero.py --suite all
+    # All 90 tasks (requires full LIBERO-90 dataset)
+    python extract_ft_libero.py --suite libero_90
 
     # Single task for testing
-    python extract_ft_libero.py --task_idx 0 --max_demos 2
+    python extract_ft_libero.py --suite libero_spatial --task_idx 0 --max_demos 2
 """
 
 from contact_aware_wm.paths import CONTACT_AWARE_WM, LIBERO_DATA_ROOT, DATA_ROOT, CHECKPOINTS_ROOT, RESULTS_ROOT
 import argparse
 import json
 import os
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import cv2
 import h5py
 import numpy as np
 from tqdm import tqdm
 
-
-# LIBERO suite → task index ranges (approximate; we detect by name prefix)
-SUITE_PREFIXES = {
+# Suites backed by the 90-task libero_90 benchmark (filter by task-name prefix)
+_LIBERO90_SUITE_PREFIXES = {
     "spatial": ["LIVING_ROOM_SCENE1", "LIVING_ROOM_SCENE2"],
     "object": ["LIVING_ROOM_SCENE3", "LIVING_ROOM_SCENE4"],
     "goal": ["LIVING_ROOM_SCENE5", "LIVING_ROOM_SCENE6"],
 }
 
+# Individual benchmark keys available in LIBERO
+_DIRECT_SUITES = {"libero_spatial", "libero_10", "libero_goal", "libero_object", "libero_90"}
 
-def get_libero_env_and_suite():
-    """Import LIBERO and create benchmark suite."""
+
+def get_libero_env_and_suite(suite_name: str):
+    """Import LIBERO and create benchmark suite.
+
+    For direct suite names (libero_spatial, libero_10, …) uses that suite.
+    For legacy short names (spatial, object, goal, all) uses libero_90.
+    """
     from libero.libero import benchmark
     from libero.libero.envs import OffScreenRenderEnv
 
     bench = benchmark.get_benchmark_dict()
-    suite = bench["libero_90"]()
+    if suite_name in _DIRECT_SUITES:
+        suite = bench[suite_name]()
+    else:
+        suite = bench["libero_90"]()
     return suite, OffScreenRenderEnv
 
 
 def get_task_indices_for_suite(suite, suite_name: str) -> List[int]:
-    """Get task indices belonging to a specific LIBERO suite."""
+    """Return task indices to process for the given suite."""
+    # Direct suites: process all tasks
+    if suite_name in _DIRECT_SUITES:
+        return list(range(suite.get_num_tasks()))
+    # Legacy libero_90 prefix-based filtering
     if suite_name == "all":
         return list(range(suite.get_num_tasks()))
-
-    prefixes = SUITE_PREFIXES.get(suite_name)
+    prefixes = _LIBERO90_SUITE_PREFIXES.get(suite_name)
     if prefixes is None:
-        raise ValueError(f"Unknown suite: {suite_name}. Choose from: {list(SUITE_PREFIXES.keys()) + ['all']}")
-
+        raise ValueError(
+            f"Unknown suite: {suite_name}. "
+            f"Choose from: {sorted(_DIRECT_SUITES) + list(_LIBERO90_SUITE_PREFIXES) + ['all']}"
+        )
     task_names = suite.get_task_names()
     indices = []
     for i, name in enumerate(task_names):
@@ -99,18 +121,28 @@ def extract_ft_from_demo(
     """
     with h5py.File(hdf5_path, "r") as f:
         demo = f["data"][demo_key]
-        states = demo["states"][:]           # (T, state_dim)
-        actions = demo["actions"][:].astype(np.float32)  # (T, 7)
-        images = demo["obs/agentview_rgb"][:]  # (T, 128, 128, 3)
-        ee_pos = demo["obs/ee_pos"][:].astype(np.float32)  # (T, 3)
-        ee_ori = demo["obs/ee_ori"][:].astype(np.float32)  # (T, 3)
+        states = demo["states"][:]
+        actions = demo["actions"][:].astype(np.float32)
+        ee_pos = demo["obs/ee_pos"][:].astype(np.float32)
+        ee_ori = demo["obs/ee_ori"][:].astype(np.float32)
+
+        # Images may be raw RGB or JPEG-encoded bytes (Cosmos-Policy regen format)
+        if "obs/agentview_rgb" in demo:
+            images = demo["obs/agentview_rgb"][:]
+        else:
+            jpeg_frames = demo["obs/agentview_rgb_jpeg"][:]
+            images = np.stack(
+                [cv2.imdecode(np.frombuffer(jpeg_frames[t].tobytes(), np.uint8), cv2.IMREAD_COLOR)[:, :, ::-1]
+                 for t in range(len(jpeg_frames))],
+                axis=0,
+            )
 
     T = len(states)
     ft_wrist = np.zeros((T, 6), dtype=np.float32)
     joint_torques = np.zeros((T, 7), dtype=np.float32)
 
     # Resize images
-    if img_size != 128:
+    if images.shape[1] != img_size or images.shape[2] != img_size:
         resized = np.zeros((T, img_size, img_size, 3), dtype=np.uint8)
         for t in range(T):
             resized[t] = cv2.resize(images[t], (img_size, img_size),
@@ -235,15 +267,26 @@ def process_task(
     return stats
 
 
+_COSMOS_DATA_ROOT = os.path.expanduser("~/data/LIBERO-Cosmos-Policy/success_only")
+_SUITE_DATA_DIRS = {
+    "libero_spatial": os.path.join(_COSMOS_DATA_ROOT, "libero_spatial_regen"),
+    "libero_10":      os.path.join(_COSMOS_DATA_ROOT, "libero_10_regen"),
+    "libero_goal":    os.path.join(_COSMOS_DATA_ROOT, "libero_goal_regen"),
+    "libero_object":  os.path.join(_COSMOS_DATA_ROOT, "libero_object_regen"),
+}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract F/T from LIBERO demos")
-    parser.add_argument("--hdf5_dir", type=str,
-                        default=LIBERO_DATA_ROOT)
-    parser.add_argument("--output_dir", type=str,
-                        default=os.path.join(CONTACT_AWARE_WM, "data/libero_90_with_ft"))
-    parser.add_argument("--suite", type=str, default="spatial",
-                        choices=["spatial", "object", "goal", "all"],
+    parser.add_argument("--suite", type=str, default="libero_spatial",
+                        choices=sorted(_DIRECT_SUITES) + ["spatial", "object", "goal", "all"],
                         help="Which LIBERO suite to process")
+    parser.add_argument("--hdf5_dir", type=str, default=None,
+                        help="Directory containing per-task HDF5 files "
+                             "(default: auto-selected from suite name)")
+    parser.add_argument("--output_dir", type=str, default=None,
+                        help="Output directory for NPZ files "
+                             "(default: ~/data/{suite}_with_ft)")
     parser.add_argument("--task_idx", type=int, default=-1,
                         help="Process a single task by index (-1 = use --suite)")
     parser.add_argument("--max_demos", type=int, default=0,
@@ -251,11 +294,21 @@ def main():
     parser.add_argument("--img_size", type=int, default=96)
     args = parser.parse_args()
 
+    # Resolve hdf5_dir
+    if args.hdf5_dir is None:
+        args.hdf5_dir = _SUITE_DATA_DIRS.get(args.suite, LIBERO_DATA_ROOT)
+    # Resolve output_dir
+    if args.output_dir is None:
+        suite_slug = args.suite.replace("libero_", "")
+        args.output_dir = os.path.expanduser(f"~/data/libero_{suite_slug}_with_ft")
+
     os.makedirs(args.output_dir, exist_ok=True)
 
-    suite, OffScreenRenderEnv = get_libero_env_and_suite()
+    suite, OffScreenRenderEnv = get_libero_env_and_suite(args.suite)
     total_tasks = suite.get_num_tasks()
-    print(f"[extract_ft] LIBERO-90: {total_tasks} tasks")
+    print(f"[extract_ft] {args.suite}: {total_tasks} tasks")
+    print(f"[extract_ft] hdf5_dir:   {args.hdf5_dir}")
+    print(f"[extract_ft] output_dir: {args.output_dir}")
 
     # Determine which tasks to process
     if args.task_idx >= 0:
