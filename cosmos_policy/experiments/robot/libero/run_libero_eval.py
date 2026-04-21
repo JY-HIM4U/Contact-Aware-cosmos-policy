@@ -211,6 +211,8 @@ class PolicyEvalConfig:
     normalize_proprio: bool = True                                       # Normalize proprio input if trained with normalized proprio
     dataset_stats_path: str = ""                                         # Path to dataset statistics file for action unnormalization and proprio normalization
     t5_text_embeddings_path: str = ""                                    # Path to precomputed T5 text embeddings dictionary (key: instruction, val: embedding)
+    use_ft: bool = False                                                  # Whether the model was trained with F/T input (state_t=11); reads sensordata from MuJoCo env
+    ft_stats_path: str = ""                                               # Path to dataset_stats_all.json for F/T normalization (required when use_ft=True)
     trained_with_image_aug: bool = True                                  # Whether the model was trained with image augmentations (needed for test-time image transformations)
     chunk_size: int = 16                                                 # Number of actions to predict in chunk
     num_open_loop_steps: int = 16                                        # Number of actions in predicted chunk to execute open-loop before requerying policy
@@ -348,6 +350,7 @@ def run_episode(
     resize_size,
     initial_state=None,
     log_file=None,
+    ft_stats=None,
 ):
     """Run a single episode in the environment."""
     # Reset environment
@@ -446,6 +449,11 @@ def run_episode(
                         return_dict = {}
                         # Query model to get action
                         start_time = time.time()
+                        ft_obs = None
+                        if cfg.use_ft and hasattr(env, "sim"):
+                            sensordata = env.sim.data.sensordata.copy()
+                            if len(sensordata) >= 6:
+                                ft_obs = sensordata[:6].astype(np.float32)
                         action_return_dict = get_action(
                             cfg,
                             model,
@@ -458,6 +466,8 @@ def run_episode(
                             generate_future_state_and_value_in_parallel=not (
                                 cfg.ar_future_prediction or cfg.ar_value_prediction or cfg.ar_qvalue_prediction
                             ),
+                            ft_obs=ft_obs,
+                            ft_stats=ft_stats,
                         )
                         query_time = time.time() - start_time
                         log_message(
@@ -705,6 +715,7 @@ def run_task(
             resize_size,
             initial_state,
             log_file,
+            ft_stats=ft_stats,
         )
 
         # Update counters
@@ -822,6 +833,15 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
 
     # Load Cosmos Policy dataset stats
     dataset_stats = load_dataset_stats(cfg.dataset_stats_path)
+
+    # Load F/T normalization stats (used when model was trained with use_ft=True)
+    ft_stats = None
+    if cfg.use_ft:
+        import json
+        ft_stats_path = os.path.expanduser(cfg.ft_stats_path)
+        with open(ft_stats_path) as _f:
+            ft_stats = json.load(_f)
+        log_message(f"Loaded F/T stats from {ft_stats_path}", None)
 
     # If using parallel inference, initialize worker pool
     worker_pool = None

@@ -710,6 +710,60 @@ cosmos_predict2_2b_480p_libero_m2_vf = LazyDict(
 )
 
 
+# Inference configs for M2 fine-tuned checkpoints
+cosmos_predict2_2b_480p_libero_m2_v__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=True,
+                lora_rank=8,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_m2_v__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero_m2_vf__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_m2_vf__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -731,6 +785,9 @@ def register_configs():
         # Contact-Aware (M2 full 5k-step runs)
         cosmos_predict2_2b_480p_libero_m2_v,
         cosmos_predict2_2b_480p_libero_m2_vf,
+        # Contact-Aware (M2 inference configs)
+        cosmos_predict2_2b_480p_libero_m2_v__inference,
+        cosmos_predict2_2b_480p_libero_m2_vf__inference,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")
