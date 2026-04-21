@@ -34,10 +34,11 @@ def dry_run(args):
     """Validate the dataset returns correctly shaped F/T-augmented samples."""
     from cosmos_policy.datasets.libero_dataset import LIBERODataset
 
-    print("[dry_run] Creating LIBERODataset with use_ft=True...")
+    use_ft = not args.no_ft
+    print(f"[dry_run] Creating LIBERODataset with use_ft={use_ft}...")
     ds = LIBERODataset(
         data_dir=args.libero_data_dir,
-        use_ft=True,
+        use_ft=use_ft,
         ft_data_dir=args.ft_data_dir,
         ft_stats_path=os.path.join(args.ft_data_dir, "dataset_stats_all.json"),
         t5_text_embeddings_path=args.t5_path,
@@ -57,10 +58,11 @@ def dry_run(args):
     sample = ds[0]
     print(f"[dry_run] Sample keys: {sorted(sample.keys())}")
     print(f"[dry_run] video shape: {sample['video'].shape}")
-    print(f"[dry_run] current_ft: {sample['current_ft']} (shape {sample['current_ft'].shape})")
-    print(f"[dry_run] future_ft: {sample['future_ft']} (shape {sample['future_ft'].shape})")
-    print(f"[dry_run] current_ft_latent_idx: {sample['current_ft_latent_idx']}")
-    print(f"[dry_run] future_ft_latent_idx: {sample['future_ft_latent_idx']}")
+    if use_ft:
+        print(f"[dry_run] current_ft: {sample['current_ft']} (shape {sample['current_ft'].shape})")
+        print(f"[dry_run] future_ft: {sample['future_ft']} (shape {sample['future_ft'].shape})")
+        print(f"[dry_run] current_ft_latent_idx: {sample['current_ft_latent_idx']}")
+        print(f"[dry_run] future_ft_latent_idx: {sample['future_ft_latent_idx']}")
     print(f"[dry_run] use_ft: {ds.use_ft}")
 
     # Verify latent indices are consistent
@@ -70,9 +72,10 @@ def dry_run(args):
         v = sample[k]
         print(f"  {k}: {v}")
 
-    # Expected new total raw images = 1 + 10*4 = 41 (state_t=11)
-    # After preprocess_image, shape is (C, T_raw, H, W) — T_raw is dim 1
-    expected_raw = 1 + 10 * 4
+    # Expected new total raw images: with F/T, state_t=11 and layout adds two
+    # latent frames (current_ft + future_ft), giving 1 + 10*4 = 41. Without F/T
+    # the baseline layout is state_t=9 → 1 + 8*4 = 33 frames.
+    expected_raw = (1 + 10 * 4) if use_ft else (1 + 8 * 4)
     actual_raw = sample["video"].shape[1]  # C, T, H, W
     print(f"\n[dry_run] Expected {expected_raw} raw images, got {actual_raw}")
     if actual_raw != expected_raw:
@@ -84,7 +87,8 @@ def dry_run(args):
     for i in [0, 1, len(ds) // 2, len(ds) - 1]:
         s = ds[i]
         assert s["video"].shape[1] == expected_raw, f"Sample {i}: video shape {s['video'].shape}"
-        assert s["current_ft"].shape == (6,), f"Sample {i}: current_ft shape {s['current_ft'].shape}"
+        if use_ft:
+            assert s["current_ft"].shape == (6,), f"Sample {i}: current_ft shape {s['current_ft'].shape}"
     print("[dry_run] All OK!")
 
 
@@ -104,6 +108,8 @@ def main():
                             os.path.join(os.environ.get("CONTACT_AWARE_WM", "."),
                                          "data/libero_90_with_ft")))
     parser.add_argument("--t5_path", type=str, default="")
+    parser.add_argument("--no_ft", action="store_true",
+                        help="Skip F/T loading — useful before F/T NPZs exist.")
     args = parser.parse_args()
 
     # Auto-detect T5 embeddings

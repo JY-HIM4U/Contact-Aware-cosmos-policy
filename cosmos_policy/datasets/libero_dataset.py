@@ -281,10 +281,21 @@ class LIBERODataset(Dataset):
         if self.use_ft:
             import json as _json
             _stats_file = ft_stats_path or os.path.join(self.ft_data_dir, "dataset_stats_all.json")
-            with open(_stats_file) as _f:
-                _ft_stats = _json.load(_f)
-            _ft_min = np.array(_ft_stats["ft_min"], dtype=np.float32)
-            _ft_max = np.array(_ft_stats["ft_max"], dtype=np.float32)
+            if os.path.exists(_stats_file):
+                with open(_stats_file) as _f:
+                    _ft_stats = _json.load(_f)
+                _ft_min = np.array(_ft_stats["ft_min"], dtype=np.float32)
+                _ft_max = np.array(_ft_stats["ft_max"], dtype=np.float32)
+            else:
+                # Identity stats fallback: lets the data pipeline smoke-test run
+                # before extract_ft_libero.py has produced real F/T NPZs. With
+                # zero-imputed F/T the normalized value is 0 (midpoint), so the
+                # model sees a neutral signal rather than a garbage one.
+                print(f"[LIBERODataset] F/T stats file not found at {_stats_file}; "
+                      "using identity min/max=[-1,+1]. Run extract_ft_libero.py "
+                      "for real F/T normalization.")
+                _ft_min = np.full(6, -1.0, dtype=np.float32)
+                _ft_max = np.full(6, 1.0, dtype=np.float32)
             _denom = np.where((_ft_max - _ft_min) < 1e-8, 1.0, _ft_max - _ft_min)
             for ep_idx in range(self.num_episodes):
                 ep = self.data[ep_idx]

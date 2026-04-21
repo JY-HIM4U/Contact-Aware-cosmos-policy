@@ -145,7 +145,7 @@ cosmos_predict2_2b_480p_libero = LazyDict(
             context_parallel_size=1,
         ),
         checkpoint=dict(
-            load_path=get_checkpoint_path("hf://nvidia/Cosmos-Predict2-2B-Video2World/model-480p-16fps.pt"),
+            load_path=get_checkpoint_path("hf://nvidia/Cosmos-Policy-LIBERO-Predict2-2B/Cosmos-Policy-LIBERO-Predict2-2B.pt"),
             load_training_state=False,  # This means do not load train state from the base checkpoint above (load_path); but when resuming this job, will load train state
             strict_resume=False,
             save_iter=1000,
@@ -462,6 +462,127 @@ cosmos_predict2_2b_480p_aloha_185_demos_4_tasks_mixture_foldshirt15_candiesinbow
 )
 
 
+# ── Contact-Aware smoke-test experiments (M1b / M2) ──────────────────────────
+# V baseline: LIBERO checkpoint + LoRA, no F/T, 100-step smoke test.
+libero_spatial_dataset_smoke = L(LIBERODataset)(
+    data_dir=os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only"),
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+)
+cosmos_predict2_2b_480p_libero_smoke_v = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=100,
+            logging_iter=5,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=2,
+            persistent_workers=False,
+            pin_memory=True,
+            dataset=libero_spatial_dataset_smoke,
+            batch_size=1,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_smoke_v",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+# V+F variant: same but with F/T injection (state_t=11) for smoke test.
+libero_spatial_dataset_smoke_vf = L(LIBERODataset)(
+    data_dir=os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only"),
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+    use_ft=True,
+    ft_data_dir=os.path.join(BASE_DATASETS_DIR, "libero_90_with_ft_dummy"),
+    ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_90_with_ft_dummy", "dataset_stats_all.json"),
+)
+cosmos_predict2_2b_480p_libero_smoke_vf = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=100,
+            logging_iter=5,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,  # blank + proprio + ft + wrist + primary
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=2,
+            persistent_workers=False,
+            pin_memory=True,
+            dataset=libero_spatial_dataset_smoke_vf,
+            batch_size=1,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero_smoke_vf",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -477,6 +598,9 @@ def register_configs():
         cosmos_predict2_2b_480p_aloha_185_demos_4_tasks_mixture_foldshirt15_candiesinbowl45_candyinbag45_eggplantchickenonplate80__inference_only,
         cosmos_predict2_2b_480p_aloha_185_demos_4_tasks_mixture_foldshirt15_candiesinbowl45_candyinbag45_eggplantchickenonplate80__resumeFrom50K_648_rollouts_Vsprime_value_func,  # ALOHA planning model
         cosmos_predict2_2b_480p_aloha_185_demos_4_tasks_mixture_foldshirt15_candiesinbowl45_candyinbag45_eggplantchickenonplate80__resumeFrom50K_648_rollouts_Vsprime_value_func__inference_only,
+        # Contact-Aware (M1b smoke tests)
+        cosmos_predict2_2b_480p_libero_smoke_v,
+        cosmos_predict2_2b_480p_libero_smoke_vf,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")
