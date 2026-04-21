@@ -25,3 +25,14 @@ outputs/
 .env
 .venv/
 *.egg-info/
+
+# Docs / reports / slides / notebooks (tracked elsewhere)
+CLAUDE.md
+*.pdf
+*.pptx
+*.ppt
+*.key
+*.docx
+*.doc
+*.ipynb
+reports/
