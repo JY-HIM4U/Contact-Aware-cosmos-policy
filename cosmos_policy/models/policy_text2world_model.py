@@ -109,6 +109,40 @@ def replace_latent_with_action_chunk(
     return new_x0
 
 
+class FtEncoder(torch.nn.Module):
+    """Encodes 6D F/T into per-channel latent embeddings for injection.
+
+    Why: the default `replace_latent_with_proprio` tiles the raw 6D vector across
+    a 12544-dim latent slot, giving the diffusion model no learnable F/T pathway.
+    This MLP produces a (B, latent_channels) embedding that gets broadcast across
+    the spatial dims, so the DiT sees a learned signal per channel.
+    """
+
+    def __init__(self, ft_dim: int = 6, hidden_dim: int = 256, latent_channels: int = 16):
+        super().__init__()
+        self.proj = torch.nn.Sequential(
+            torch.nn.Linear(ft_dim, hidden_dim),
+            torch.nn.GELU(),
+            torch.nn.Linear(hidden_dim, latent_channels),
+        )
+
+    def forward(self, ft: torch.Tensor) -> torch.Tensor:
+        return self.proj(ft.float()).to(ft.dtype)
+
+
+def replace_latent_with_encoded_ft(
+    x0: torch.Tensor, encoded_ft: torch.Tensor, ft_indices: torch.Tensor
+) -> torch.Tensor:
+    """Replace x0[:, :, ft_indices, :, :] with broadcast (B, C) -> (B, C, H, W)."""
+    batch_indices = torch.arange(x0.shape[0], device=x0.device)
+    target = x0[batch_indices, :, ft_indices, :, :]
+    B, C, H, W = target.shape
+    expanded = encoded_ft[:, :, None, None].expand(B, C, H, W).to(x0.dtype)
+    new_x0 = x0
+    new_x0[batch_indices, :, ft_indices, :, :] = expanded
+    return new_x0
+
+
 def replace_latent_with_proprio(x0: torch.Tensor, proprio: torch.Tensor, proprio_indices: torch.Tensor) -> torch.Tensor:
     """
     Replaces the image latent (at the specified proprio index) in clean input image latents x0 with the proprio.

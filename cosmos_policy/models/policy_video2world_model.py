@@ -39,7 +39,9 @@ from cosmos_policy.config.conditioner.video2world_conditioner import Video2World
 from cosmos_policy.models.policy_text2world_model import (
     CosmosPolicyDiffusionModel,
     CosmosPolicyModelConfig,
+    FtEncoder,
     replace_latent_with_action_chunk,
+    replace_latent_with_encoded_ft,
     replace_latent_with_proprio,
 )
 
@@ -58,6 +60,9 @@ class CosmosPolicyVideo2WorldConfig(CosmosPolicyModelConfig):
     min_num_conditional_frames: int = 1  # Minimum number of latent conditional frames
     max_num_conditional_frames: int = 2  # Maximum number of latent conditional frames
     sigma_conditional: float = 0.0001  # Noise level used for conditional frames
+    use_ft_encoder: bool = False  # Use a learnable MLP to encode 6D F/T -> per-channel latent embedding
+    ft_encoder_hidden_dim: int = 256  # Hidden dim of the F/T encoder MLP
+    ft_encoder_latent_channels: int = 16  # Output channels (must match VAE latent channels)
     conditioning_strategy: str = str(ConditioningStrategy.FRAME_REPLACE)  # What strategy to use for conditioning
     denoise_replace_gt_frames: bool = True  # Whether to denoise the ground truth frames
     high_sigma_strategy: str = str(HighSigmaStrategy.UNIFORM80_2000)  # What strategy to use for high sigma
@@ -96,6 +101,28 @@ class CosmosPolicyVideo2WorldModel(CosmosPolicyDiffusionModel):
     def __init__(self, config: CosmosPolicyVideo2WorldConfig):
         super().__init__(config)
         self.config: CosmosPolicyVideo2WorldConfig = config
+
+        if config.use_ft_encoder:
+            self.ft_encoder = FtEncoder(
+                ft_dim=6,
+                hidden_dim=config.ft_encoder_hidden_dim,
+                latent_channels=config.ft_encoder_latent_channels,
+            ).cuda()
+
+    def init_optimizer_scheduler(self, optimizer_config, scheduler_config):
+        if not getattr(self, "ft_encoder", None):
+            return super().init_optimizer_scheduler(optimizer_config, scheduler_config)
+
+        from cosmos_policy._src.imaginaire.lazy_config import instantiate as lazy_instantiate
+        from cosmos_policy._src.predict2.utils.optim_instantiate import get_base_scheduler
+
+        # Wrap net + ft_encoder so the optimizer sees both parameter groups
+        wrapper = torch.nn.Module()
+        wrapper.net = self.net
+        wrapper.ft_encoder = self.ft_encoder
+        optimizer = lazy_instantiate(optimizer_config, model=wrapper)
+        scheduler = get_base_scheduler(optimizer, self, scheduler_config)
+        return optimizer, scheduler
 
     def get_data_and_condition(
         self, data_batch: dict[str, torch.Tensor]
@@ -376,22 +403,28 @@ class CosmosPolicyVideo2WorldModel(CosmosPolicyDiffusionModel):
                 proprio_indices=data_batch["future_proprio_latent_idx"],
             )
 
-        # Manually add in current and future F/T to the condition.gt_frames
+        # Manually add in current and future F/T to the condition.gt_frames.
+        # When use_ft_encoder is enabled, route F/T through the learnable MLP first
+        # so the latent slot gets a per-channel embedding rather than tiled raw values.
+        ft_inject = (
+            replace_latent_with_encoded_ft if getattr(self, "ft_encoder", None) else replace_latent_with_proprio
+        )
+        ft_transform = (lambda x: self.ft_encoder(x)) if getattr(self, "ft_encoder", None) else (lambda x: x)
         if "current_ft" in data_batch and data_batch.get("current_ft_latent_idx") is not None and torch.all(
             data_batch["current_ft_latent_idx"] != -1
         ):
-            condition.gt_frames = replace_latent_with_proprio(
+            condition.gt_frames = ft_inject(
                 condition.gt_frames,
-                data_batch["current_ft"],
-                proprio_indices=data_batch["current_ft_latent_idx"],
+                ft_transform(data_batch["current_ft"]),
+                data_batch["current_ft_latent_idx"],
             )
-        if "future_ft" in data_batch and data_batch.get("future_ft_latent_idx") is not None and torch.all(
+        if "future_ft" in data_batch and data_batch["future_ft"] is not None and data_batch.get("future_ft_latent_idx") is not None and torch.all(
             data_batch["future_ft_latent_idx"] != -1
         ):
-            condition.gt_frames = replace_latent_with_proprio(
+            condition.gt_frames = ft_inject(
                 condition.gt_frames,
-                data_batch["future_ft"],
-                proprio_indices=data_batch["future_ft_latent_idx"],
+                ft_transform(data_batch["future_ft"]),
+                data_batch["future_ft_latent_idx"],
             )
 
         # Manually add in value to the condition.gt_frames as well
