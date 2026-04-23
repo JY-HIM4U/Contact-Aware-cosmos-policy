@@ -203,3 +203,19 @@ torchrun --nproc_per_node=4 contact_aware_wm/train_ft_demo.py --num_steps 5000
 | — | Eval on contact tasks via `run_cosmos_libero.py` | pending | Compare vs `libero_improved_noft_ctx1` |
 
 Update this table as each step moves; keep one row per step, no prose.
+
+
+260423 Talk
+- Existing model already reaches 100% success (Libero Spatial)
+    - Recursive Test?
+    - Check 100% one more time. (Test set was the subset of the training set?)
+    - Fine-tuning reduces the performance
+        - Gripper (6 dim) concat to proprioception
+- Spiky F/T/Contact
+
+
+Future plan;
+Consider Robomimic
+Jaeyoun: latent injection -> F/T -> Fine-tuning 5090 for libero 90
+Minyoung: Base line performance check (100%?) -> Reading paper.
+
