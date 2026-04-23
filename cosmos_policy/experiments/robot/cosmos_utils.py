@@ -24,7 +24,7 @@ import shutil
 import time
 import traceback
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import requests

@@ -221,6 +221,20 @@ def load_model_state_dict_from_checkpoint(
     if SMOKE:
         return model
 
+    if load_from_local and checkpoint_format == "dcp" and os.path.isdir(local_s3_ckpt_fp):
+        # Local DCP directory checkpoint — use DistributedCheckpointer (same as S3 DCP path)
+        log.info(f"Loading local DCP checkpoint from {local_s3_ckpt_fp}")
+        checkpointer = DistributedCheckpointer(config.checkpoint, config.job, callbacks=None, disable_async=True)
+        _model_wrapper = ModelWrapper(model, load_ema_to_reg=load_ema_to_reg)
+        _state_dict = _model_wrapper.state_dict()
+        model_dcp_path = local_s3_ckpt_fp if local_s3_ckpt_fp.rstrip("/").endswith("/model") else os.path.join(local_s3_ckpt_fp, "model")
+        storage_reader = checkpointer.get_storage_reader(model_dcp_path)
+        load_planner = DefaultLoadPlanner(allow_partial_load=True)
+        dcp_load_state_dict(_state_dict, storage_reader, load_planner)
+        _model_wrapper.load_state_dict(_state_dict)
+        distributed.sync_model_states(model, src=0)
+        return model
+
     if load_from_local:
         # Load on rank0 only and broadcast
         if distributed.is_rank0():

@@ -213,6 +213,7 @@ class PolicyEvalConfig:
     t5_text_embeddings_path: str = ""                                    # Path to precomputed T5 text embeddings dictionary (key: instruction, val: embedding)
     use_ft: bool = False                                                  # Whether the model was trained with F/T input (state_t=11); reads sensordata from MuJoCo env
     ft_stats_path: str = ""                                               # Path to dataset_stats_all.json for F/T normalization (required when use_ft=True)
+    ft_preprocess: bool = False                                           # Apply CausalFtFilter (median3 + butter 3Hz) to sensordata before normalization. Must match how training data was processed.
     trained_with_image_aug: bool = True                                  # Whether the model was trained with image augmentations (needed for test-time image transformations)
     chunk_size: int = 16                                                 # Number of actions to predict in chunk
     num_open_loop_steps: int = 16                                        # Number of actions in predicted chunk to execute open-loop before requerying policy
@@ -351,6 +352,7 @@ def run_episode(
     initial_state=None,
     log_file=None,
     ft_stats=None,
+    ft_filter=None,
 ):
     """Run a single episode in the environment."""
     # Reset environment
@@ -358,6 +360,8 @@ def run_episode(
         reset_seed = cfg.deterministic_reset_seed if cfg.deterministic_reset_seed is not None else cfg.seed
         set_seed_everywhere(reset_seed)
     env.reset()
+    if ft_filter is not None:
+        ft_filter.reset()
 
     # Set initial state if provided
     if initial_state is not None:
@@ -454,6 +458,8 @@ def run_episode(
                             sensordata = env.sim.data.sensordata.copy()
                             if len(sensordata) >= 6:
                                 ft_obs = sensordata[:6].astype(np.float32)
+                                if ft_filter is not None:
+                                    ft_obs = ft_filter.step(ft_obs)
                         action_return_dict = get_action(
                             cfg,
                             model,
@@ -668,6 +674,8 @@ def run_task(
     total_episodes=0,
     total_successes=0,
     log_file=None,
+    ft_stats=None,
+    ft_filter=None,
 ):
     """Run evaluation for a single task."""
     # Get task
@@ -716,6 +724,7 @@ def run_task(
             initial_state,
             log_file,
             ft_stats=ft_stats,
+            ft_filter=ft_filter,
         )
 
         # Update counters
@@ -843,6 +852,12 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
             ft_stats = json.load(_f)
         log_message(f"Loaded F/T stats from {ft_stats_path}", None)
 
+    ft_filter = None
+    if cfg.use_ft and cfg.ft_preprocess:
+        from cosmos_policy.datasets.ft_filter import CausalFtFilter
+        ft_filter = CausalFtFilter()
+        log_message("F/T preprocess enabled (CausalFtFilter: median3 + butter 3Hz).", None)
+
     # If using parallel inference, initialize worker pool
     worker_pool = None
     if cfg.use_parallel_inference:
@@ -934,6 +949,8 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
             total_episodes,
             total_successes,
             log_file,
+            ft_stats=ft_stats,
+            ft_filter=ft_filter,
         )
 
     # Calculate final success rate

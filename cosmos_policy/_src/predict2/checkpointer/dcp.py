@@ -599,6 +599,37 @@ class DistributedCheckpointer(AbstractCheckpointer):
             log.critical(f"Loaded checkpoint from {checkpoint_path} in iteration {iteration}")
         else:
             log.info("Training from scratch.")
+            # If load_path is a .pt file, load it as the initial model weights.
+            # The DistributedCheckpointer only resumes from DCP paths; .pt paths are
+            # handled here so that pre-trained .pt checkpoints seed new LoRA fine-tunes.
+            if self.load_path and str(self.load_path).endswith(".pt"):
+                pt_path = str(self.load_path)
+                if pt_path.startswith("hf://"):
+                    from cosmos_policy._src.imaginaire.utils.checkpoint_db import get_checkpoint_path
+                    pt_path = get_checkpoint_path(pt_path)
+                log.info(f"Loading pretrained .pt model weights from {pt_path}")
+                pt_sd = torch.load(pt_path, map_location="cpu", weights_only=False)
+                # ModelWrapper.state_dict() returns the LoRA-key-stripped state dict with
+                # correct FSDP2 param names (e.g. net.x_embedder.proj.1.weight) and the
+                # actual DTensor objects as values. We copy in-place via _local_tensor to
+                # bypass DTensor's copy_ dispatch (which rejects plain-tensor sources).
+                # For single-GPU Replicate placement, local == full tensor.
+                from torch.distributed.tensor import DTensor as _DTensor
+                _model_wrapper = ModelWrapper(model)
+                _state_dict = _model_wrapper.state_dict()  # stripped keys, DTensor values
+                matched = 0
+                with torch.no_grad():
+                    for k, value in _state_dict.items():
+                        if k not in pt_sd:
+                            continue
+                        src = pt_sd[k]
+                        if isinstance(value, _DTensor):
+                            local = value._local_tensor
+                            local.copy_(src.to(device=local.device, dtype=local.dtype))
+                        elif isinstance(value, torch.Tensor):
+                            value.data.copy_(src.to(device=value.device, dtype=value.dtype))
+                        matched += 1
+                log.info(f"Matched {matched}/{len(_state_dict)} keys from pretrained .pt checkpoint")
         torch.cuda.empty_cache()
 
         if self.callbacks is not None:

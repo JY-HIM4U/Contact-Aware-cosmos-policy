@@ -796,6 +796,97 @@ libero_10_dataset_m2_vf = L(LIBERODataset)(
     ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_10_with_ft", "dataset_stats_p1p99.json"),
 )
 
+libero_10_dataset_m2_vf_filtered = L(LIBERODataset)(
+    data_dir=os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "libero_10_regen"),
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+    use_ft=True,
+    ft_data_dir=os.path.join(BASE_DATASETS_DIR, "libero_10_with_ft_filtered"),
+    ft_stats_path=os.path.join(BASE_DATASETS_DIR, "libero_10_with_ft_filtered", "dataset_stats_p1p99.json"),
+)
+
+cosmos_predict2_2b_480p_libero10_m2_vf_filtered = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=25000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero_10_dataset_m2_vf_filtered,
+            batch_size=4,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero10_m2_vf_filtered",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero10_m2_vf_filtered__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero10_m2_vf_filtered__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
 cosmos_predict2_2b_480p_libero10_m2_vf = LazyDict(
     dict(
         defaults=[
@@ -1123,6 +1214,9 @@ def register_configs():
         # Contact-Aware (libero_10: V+F where contact actually matters)
         cosmos_predict2_2b_480p_libero10_m2_vf,
         cosmos_predict2_2b_480p_libero10_m2_vf__inference,
+        # Contact-Aware (libero_10: V+F with offline causal median3+butter3Hz F/T preprocessing)
+        cosmos_predict2_2b_480p_libero10_m2_vf_filtered,
+        cosmos_predict2_2b_480p_libero10_m2_vf_filtered__inference,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")
