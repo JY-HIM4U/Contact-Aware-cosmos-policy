@@ -1178,6 +1178,185 @@ cosmos_predict2_2b_480p_libero_m2_vf__inference = LazyDict(
 )
 
 
+# ── Single-task LIBERO-90 fine-tune: KITCHEN_SCENE3_turn_on_the_stove ──────
+# Pretrained cosmos-policy was trained on libero_{spatial,10,goal,object}; libero_90
+# single-task variants are unseen. Fine-tune only on this one task to compare V vs V+F
+# on a contact-rich task where F/T (torque under gripper occlusion) should help most.
+_LIBERO90_STOVE_DATA_DIR = os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "libero_90_stove")
+_LIBERO90_STOVE_FT_DIR = os.path.join(BASE_DATASETS_DIR, "libero_90_stove_with_ft")
+
+libero90_stove_dataset_v = L(LIBERODataset)(
+    data_dir=_LIBERO90_STOVE_DATA_DIR,
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings_with_libero90.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+)
+
+libero90_stove_dataset_vf = L(LIBERODataset)(
+    data_dir=_LIBERO90_STOVE_DATA_DIR,
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings_with_libero90.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+    use_ft=True,
+    ft_data_dir=_LIBERO90_STOVE_FT_DIR,
+    ft_stats_path=os.path.join(_LIBERO90_STOVE_FT_DIR, "dataset_stats_p1p99.json"),
+)
+
+cosmos_predict2_2b_480p_libero90_stove_v = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=5000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero90_stove_dataset_v,
+            batch_size=4,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_v",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_stove_v__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=True,
+                lora_rank=8,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_v__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_stove_vf = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=5000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero90_stove_dataset_vf,
+            batch_size=4,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_vf",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_stove_vf__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=True,
+                lora_rank=8,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_vf__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -1217,6 +1396,11 @@ def register_configs():
         # Contact-Aware (libero_10: V+F with offline causal median3+butter3Hz F/T preprocessing)
         cosmos_predict2_2b_480p_libero10_m2_vf_filtered,
         cosmos_predict2_2b_480p_libero10_m2_vf_filtered__inference,
+        # Contact-Aware (single task: libero_90 KITCHEN_SCENE3_turn_on_the_stove, V vs V+F)
+        cosmos_predict2_2b_480p_libero90_stove_v,
+        cosmos_predict2_2b_480p_libero90_stove_v__inference,
+        cosmos_predict2_2b_480p_libero90_stove_vf,
+        cosmos_predict2_2b_480p_libero90_stove_vf__inference,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")

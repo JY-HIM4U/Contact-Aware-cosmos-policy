@@ -244,6 +244,7 @@ class PolicyEvalConfig:
     # LIBERO environment-specific parameters
     #################################################################################################################
     task_suite_name: str = TaskSuite.LIBERO_SPATIAL                      # Task suite (must be one of: LIBERO_SPATIAL, LIBERO_OBJECT, LIBERO_GOAL, LIBERO_10, LIBERO_90)
+    task_id: int = -1                                                    # If >= 0, only evaluate this single task index within the suite
     num_trials_per_task: int = 50                                        # Number of rollouts per task
     initial_states_path: str = "DEFAULT"                                 # "DEFAULT", or path to initial states JSON file
     env_img_res: int = 256                                               # Resolution for rendering environment images (not policy input resolution)
@@ -931,9 +932,17 @@ def eval_libero(cfg: PolicyEvalConfig) -> float:
     log_message(f"Task suite: {cfg.task_suite_name}", log_file)
     log_message(f"Number of tasks: {num_tasks}", log_file)
 
+    # Optionally restrict to a single task
+    if cfg.task_id >= 0:
+        assert cfg.task_id < num_tasks, f"task_id {cfg.task_id} out of range for {cfg.task_suite_name} ({num_tasks} tasks)"
+        task_ids = [cfg.task_id]
+        log_message(f"Single-task eval: task_id={cfg.task_id} ({task_suite.get_task_names()[cfg.task_id]})", log_file)
+    else:
+        task_ids = list(range(num_tasks))
+
     # Start evaluation
     total_episodes, total_successes = 0, 0
-    for task_id in tqdm.tqdm(range(num_tasks)):
+    for task_id in tqdm.tqdm(task_ids):
         (
             total_episodes,
             total_successes,
