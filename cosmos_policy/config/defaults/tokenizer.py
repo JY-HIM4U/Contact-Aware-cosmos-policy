@@ -26,7 +26,7 @@ from cosmos_policy.tokenizers.wan2pt1 import Wan2pt1VAEInterface
 
 # Policy-specific wan2pt1 tokenizer with deterministic seeding
 PolicyWan2pt1VAEConfig = L(Wan2pt1VAEInterface)(
-    vae_pth=os.path.expanduser("~/data/cosmos_tokenizer/tokenizer.pth"),
+    vae_pth=os.environ.get("COSMOS_TOKENIZER_PATH", os.path.expanduser("~/data/cosmos_tokenizer/tokenizer.pth")),
     s3_credential_path="credentials/s3_training.secret",
     load_mean_std=False,
     temporal_window=4,

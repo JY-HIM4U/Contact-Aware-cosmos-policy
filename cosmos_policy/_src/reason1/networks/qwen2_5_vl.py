@@ -65,7 +65,8 @@ else:
     print("flash_attn_2 not available")
     flash_attn_varlen_func = None
 
-assert is_flash_attn_2_available(), "flash_attn_2 not available. run pip install flash_attn"
+if not is_flash_attn_2_available():
+    print("WARNING: flash_attn_2 not available; qwen2_5_vl will fall back to torch attention paths if used.")
 
 logger = logging.get_logger(__name__)
 

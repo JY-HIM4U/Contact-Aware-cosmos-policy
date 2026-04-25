@@ -28,7 +28,10 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from cosmos_policy._src.imaginaire.utils import log
 from cosmos_policy._src.reason1.configs.default.model_config import FSDP2ModelConfig
-from cosmos_policy._src.reason1.utils.fused_adam import FusedAdam
+try:
+    from cosmos_policy._src.reason1.utils.fused_adam import FusedAdam
+except ImportError:
+    FusedAdam = None
 
 
 def _optimizer_cls(params: List[nn.Parameter], optimizer_kwargs: Dict[str, Any], name: str):

@@ -1357,6 +1357,77 @@ cosmos_predict2_2b_480p_libero90_stove_vf__inference = LazyDict(
 )
 
 
+
+# ── GH200 full fine-tune (no LoRA): paper Appendix A recipe ─────────────
+# Per cosmos paper A.2.2: all weights fully fine-tuned, larger batch, longer training.
+# Single-GPU GH200 (96GB) lets us run batch=8, no FSDP needed.
+cosmos_predict2_2b_480p_libero90_stove_vf_full = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=20000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=False,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero90_stove_dataset_vf,
+            batch_size=8,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_vf_full",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_stove_vf_full__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=False,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_stove_vf_full__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -1401,6 +1472,9 @@ def register_configs():
         cosmos_predict2_2b_480p_libero90_stove_v__inference,
         cosmos_predict2_2b_480p_libero90_stove_vf,
         cosmos_predict2_2b_480p_libero90_stove_vf__inference,
+        # Contact-Aware (single task, GH200 full fine-tune, no LoRA, paper-style recipe)
+        cosmos_predict2_2b_480p_libero90_stove_vf_full,
+        cosmos_predict2_2b_480p_libero90_stove_vf_full__inference,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")
