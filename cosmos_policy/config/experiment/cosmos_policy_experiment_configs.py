@@ -1428,6 +1428,197 @@ cosmos_predict2_2b_480p_libero90_stove_vf_full__inference = LazyDict(
     )
 )
 
+
+# ── GH200 full FT from Cosmos-Predict2 base (NOT cosmos-policy LIBERO) ─────
+# Single-task LIBERO-90 fine-tune to compare V vs V+F under matched conditions:
+# both runs start from the same vision-only DiT prior (no LIBERO bias), so any
+# V+F gain is unambiguously attributable to the F/T input.
+#
+# Task: KITCHEN_SCENE4_put_the_wine_bottle_in_the_bottom_drawer_of_the_cabinet
+# - 0/3 success on cosmos-policy LIBERO baseline (eval 2026-04-24, libero_90)
+# - Drawer is already open (no sub-task) → single contact event = clean F/T attribution
+# - Tall wine bottle into shallow drawer = tight geometric constraint where
+#   lateral force spikes signal misalignment
+# - Sibling "put the black bowl in the bottom drawer" was 3/3 → bottle geometry,
+#   not drawer access, is the differentiator → exactly what F/T should solve
+_LIBERO90_WINEDRAWER_DATA_DIR = os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "libero_90_winedrawer")
+_LIBERO90_WINEDRAWER_FT_DIR = os.path.join(BASE_DATASETS_DIR, "libero_90_winedrawer_with_ft")
+_COSMOS_PREDICT2_BASE_CKPT = "hf://nvidia/Cosmos-Predict2-2B-Video2World/model-480p-16fps.pt"
+
+libero90_winedrawer_dataset_v = L(LIBERODataset)(
+    data_dir=_LIBERO90_WINEDRAWER_DATA_DIR,
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings_with_libero90.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+)
+
+libero90_winedrawer_dataset_vf = L(LIBERODataset)(
+    data_dir=_LIBERO90_WINEDRAWER_DATA_DIR,
+    t5_text_embeddings_path=os.path.join(
+        BASE_DATASETS_DIR, "LIBERO-Cosmos-Policy", "success_only", "t5_embeddings_with_libero90.pkl"
+    ),
+    chunk_size=16,
+    use_image_aug=False,
+    use_wrist_images=True,
+    use_proprio=True,
+    normalize_proprio=True,
+    normalize_actions=True,
+    num_duplicates_per_image=4,
+    use_stronger_image_aug=False,
+    rollout_data_dir="",
+    demonstration_sampling_prob=1.0,
+    return_value_function_returns=True,
+    gamma=0.99,
+    use_ft=True,
+    ft_data_dir=_LIBERO90_WINEDRAWER_FT_DIR,
+    ft_stats_path=os.path.join(_LIBERO90_WINEDRAWER_FT_DIR, "dataset_stats_p1p99.json"),
+)
+
+cosmos_predict2_2b_480p_libero90_winedrawer_v_full = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=20000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        checkpoint=dict(
+            load_path=get_checkpoint_path(_COSMOS_PREDICT2_BASE_CKPT),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=False,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero90_winedrawer_dataset_v,
+            batch_size=8,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_winedrawer_v_full",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_winedrawer_v_full__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                use_lora=False,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_winedrawer_v_full__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_winedrawer_vf_full = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        trainer=dict(
+            max_iter=20000,
+            logging_iter=50,
+            run_validation=False,
+            straggler_detection=dict(enabled=False),
+            callbacks=dict(
+                compile_tokenizer=dict(enabled=False),
+            ),
+        ),
+        checkpoint=dict(
+            load_path=get_checkpoint_path(_COSMOS_PREDICT2_BASE_CKPT),
+        ),
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=False,
+            )
+        ),
+        dataloader_train=L(DataLoader)(
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True,
+            dataset=libero90_winedrawer_dataset_vf,
+            batch_size=8,
+            drop_last=True,
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_winedrawer_vf_full",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+cosmos_predict2_2b_480p_libero90_winedrawer_vf_full__inference = LazyDict(
+    dict(
+        defaults=[
+            "/experiment/cosmos_predict2_2b_480p_libero",
+            "_self_",
+        ],
+        model=L(CosmosPolicyVideo2WorldModel)(
+            config=dict(
+                state_t=11,
+                min_num_conditional_frames=5,
+                max_num_conditional_frames=5,
+                tokenizer=dict(chunk_duration=41),
+                use_lora=False,
+                sde=L(HybridEDMSDE)(
+                    sigma_max=80,
+                    sigma_min=4,
+                ),
+            )
+        ),
+        job=dict(
+            group="cosmos_v2_contact_aware",
+            name="cosmos_predict2_2b_480p_libero90_winedrawer_vf_full__inference",
+        ),
+        upload_reproducible_setup=False,
+    )
+)
+
+
 def register_configs():
     cs = ConfigStore.instance()
     # Register the experiments
@@ -1475,6 +1666,12 @@ def register_configs():
         # Contact-Aware (single task, GH200 full fine-tune, no LoRA, paper-style recipe)
         cosmos_predict2_2b_480p_libero90_stove_vf_full,
         cosmos_predict2_2b_480p_libero90_stove_vf_full__inference,
+        # Contact-Aware (single task, GH200 full FT FROM COSMOS-PREDICT BASE — V vs V+F matched)
+        # Task: KITCHEN_SCENE4_put_the_wine_bottle_in_the_bottom_drawer_of_the_cabinet
+        cosmos_predict2_2b_480p_libero90_winedrawer_v_full,
+        cosmos_predict2_2b_480p_libero90_winedrawer_v_full__inference,
+        cosmos_predict2_2b_480p_libero90_winedrawer_vf_full,
+        cosmos_predict2_2b_480p_libero90_winedrawer_vf_full__inference,
     ]:
         experiment_name = _item["job"]["name"]
         log.info(f"Registering experiment: {experiment_name}")
