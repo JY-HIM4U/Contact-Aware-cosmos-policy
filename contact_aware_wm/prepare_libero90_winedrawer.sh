@@ -37,16 +37,21 @@ if [[ -f "$STOVE_DIR/dataset_statistics.json" ]]; then
         cp -n "$STOVE_DIR/dataset_statistics_post_norm.json" "$DATA_DIR/dataset_statistics_post_norm.json"
 fi
 
-# Verify the requested task_idx matches TASK_NAME — print suite listing if not
+# Use whatever python is active. On x86 dev machines, run via:
+#   uv run --extra cu128 bash prepare_libero90_winedrawer.sh
+# On aarch64 (GH200) the uv-pinned flash-attn has no wheel; activate the
+# cosmos-policy conda env first and run this script directly.
+PY="${PY:-python}"
+
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$(dirname "$SCRIPT_DIR")"
 
-uv run --extra cu128 python "$SCRIPT_DIR/extract_ft_libero.py" \
+"$PY" "$SCRIPT_DIR/extract_ft_libero.py" \
     --suite libero_90 \
     --task_idx "$TASK_IDX" \
     --output_dir "$FT_DIR"
 
-uv run --extra cu128 python "$SCRIPT_DIR/compute_ft_stats.py" "$FT_DIR"
+"$PY" "$SCRIPT_DIR/compute_ft_stats.py" "$FT_DIR"
 
 echo "[prepare_libero90_winedrawer] Done."
 echo "  HDF5 dir : $DATA_DIR"
