@@ -118,7 +118,7 @@ Otherwise install miniforge to **persistent scratch** (NOT `$HOME` — that's
 likely tmpfs and will vanish between jobs):
 
 ```bash
-PERSIST=<persistent-scratch>          # e.g. /data/clear/<user>
+PERSIST=/data/clear/robot-simulation     # personal scratch root          # e.g. /data/clear/<user>
 CONDA_DIR=$PERSIST/miniforge3
 curl -L -o /tmp/miniforge.sh \
     https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
@@ -134,7 +134,7 @@ Don't let conda put the env under `$HOME` if `$HOME` is tmpfs — use
 `--prefix` to land it in shared scratch.
 
 ```bash
-PERSIST=<persistent-scratch>
+PERSIST=/data/clear/robot-simulation     # personal scratch root
 ENV_PREFIX=$PERSIST/envs/cosmos-policy
 
 mamba create --prefix $ENV_PREFIX -c nvidia -c conda-forge -y \
@@ -157,7 +157,7 @@ mamba create -n cosmos-policy ...     # then conda activate cosmos-policy
 ### C.3 Install Python dependencies
 
 ```bash
-cd <repo>/Contact-Aware-cosmos-policy
+cd $PERSIST/Contact-Aware-cosmos-policy
 
 # 1. PyTorch with CUDA 12.8 (aarch64 wheels available for torch >= 2.4)
 pip install --index-url https://download.pytorch.org/whl/cu128 \
@@ -226,7 +226,7 @@ huggingface-cli download yifengzhu-hf/LIBERO-datasets --repo-type dataset \
     --include "libero_90/*" --local-dir .
 
 # Single-task prep
-cd <repo>
+cd $PERSIST/Contact-Aware-cosmos-policy
 PY=python bash contact_aware_wm/prepare_libero90_winedrawer.sh
 ```
 
@@ -234,7 +234,7 @@ PY=python bash contact_aware_wm/prepare_libero90_winedrawer.sh
 
 ```bash
 # Minimal: import path resolution + 1-step training
-cd <repo>
+cd $PERSIST/Contact-Aware-cosmos-policy
 BASE_DATASETS_DIR=$PERSIST/cosmos-policy-data \
 LIBERO_DATA_ROOT=$LIBERO_DATA_ROOT \
 torchrun --nproc_per_node=1 -m cosmos_policy.scripts.train \
@@ -247,29 +247,37 @@ If that completes 2 iterations, you're good. Then bump `max_iter` back to 20000.
 
 ### C.8 Sample SLURM sbatch script
 
-Save as `slurm_train_winedrawer.sbatch` next to your data:
+For interactive testing, the working srun pattern on this cluster is:
+```bash
+srun --account=clear --partition=quanta-gh200 --qos=quanta-main \
+     --time=48:00:00 --cpus-per-task=10 --gpus-per-node=1 --mem=30GB \
+     --pty /bin/bash
+```
+
+For batch training, save as `slurm_train_winedrawer.sbatch` in the repo:
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=cosmos-winedrawer
-#SBATCH --partition=<YOUR_PARTITION>
-#SBATCH --account=<YOUR_ACCOUNT>
+#SBATCH --account=clear
+#SBATCH --partition=quanta-gh200
+#SBATCH --qos=quanta-main
 #SBATCH --nodes=1
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
-#SBATCH --time=72:00:00            # 20k iters at batch=8 — adjust
+#SBATCH --gpus-per-node=1
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=128G                 # 2B model FT needs more than the 30G interactive value
+#SBATCH --time=48:00:00            # max on quanta-main; 20k iters at batch=8 may not finish in one job — see C.10
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
 
 set -euo pipefail
 
 # Activate conda env
-PERSIST=<persistent-scratch>
+PERSIST=/data/clear/robot-simulation
 source $PERSIST/miniforge3/etc/profile.d/conda.sh
 conda activate $PERSIST/envs/cosmos-policy
 
-# Persistent caches (avoid tmpfs $HOME)
+# Persistent caches (avoid tmpfs $HOME on compute node)
 export HF_HOME=$PERSIST/hf_cache
 export TRITON_CACHE_DIR=$PERSIST/triton_cache
 export TORCH_EXTENSIONS_DIR=$PERSIST/torch_ext_cache
@@ -295,6 +303,32 @@ Submit:
 mkdir -p logs && sbatch slurm_train_winedrawer.sbatch
 squeue -u $USER
 tail -f logs/cosmos-winedrawer-<jobid>.out
+```
+
+### C.10 Resuming across the 48h time-limit
+
+A 20k-iter run at batch=8 may not finish in 48h on a single GH200 — and
+`quanta-main`'s max walltime is 48h. Cosmos-policy checkpoints every
+`save_iter=1000` steps to `/tmp/imaginaire4-output/.../checkpoints/`, but
+`/tmp` on a compute node is ephemeral. Two options:
+
+**Option A — redirect checkpoint output to persistent scratch.** Add to
+the sbatch script before `torchrun`:
+```bash
+export IMAGINAIRE4_OUTPUT_DIR=$PERSIST/cosmos-policy-runs   # if the trainer respects this
+# Or use a Hydra override:
+TRAIN_OUTPUT_OVERRIDE="job.path_local_root=$PERSIST/cosmos-policy-runs"
+torchrun ... -- experiment=$EXPERIMENT $TRAIN_OUTPUT_OVERRIDE
+```
+Then on resume, the trainer auto-detects `latest_checkpoint.txt` and continues.
+
+**Option B — chain jobs with `--dependency=afterok`.** Submit a
+self-resubmitting wrapper that re-launches itself if `latest_checkpoint.txt`
+shows < 20000 iters:
+```bash
+sbatch slurm_train_winedrawer.sbatch
+JOBID=$(squeue -u $USER -h -o %i | tail -1)
+sbatch --dependency=afterok:$JOBID slurm_train_winedrawer.sbatch
 ```
 
 ### C.9 Path-C-specific gotchas
@@ -343,7 +377,7 @@ After the env is set up:
 
 ```bash
 # Pick a writable, persistent location
-export BASE_DATASETS_DIR=/data/<your-cluster-scratch>/cosmos-policy-data
+export BASE_DATASETS_DIR=/data/clear/robot-simulation/cosmos-policy-data
 export LIBERO_DATA_ROOT=$BASE_DATASETS_DIR/libero_raw/libero_90
 
 # Download libero_90 demos (one-time, ~few GB)
@@ -352,6 +386,6 @@ huggingface-cli download yifengzhu-hf/LIBERO-datasets --repo-type dataset \
     --include "libero_90/*" --local-dir .
 
 # Single-task prep (winedrawer experiment)
-cd <repo>
+cd $PERSIST/Contact-Aware-cosmos-policy
 bash contact_aware_wm/prepare_libero90_winedrawer.sh
 ```
