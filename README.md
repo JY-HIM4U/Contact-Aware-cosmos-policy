@@ -99,7 +99,11 @@ If you run into runtime errors, you may need to enter the Python shell via `uv r
 
 ## Installation
 
-See [SETUP.md](SETUP.md) for instructions on setting up the environment.
+See [SETUP.md](SETUP.md) for the official Docker-based setup.
+
+For bare-metal HPC clusters where Docker isn't an option (and especially
+aarch64 nodes like NVIDIA GH200), see [CLUSTER_SETUP.md](CLUSTER_SETUP.md)
+which covers both the uv-native path and conda-based alternatives.
 
 ## Training and Evaluation
 
