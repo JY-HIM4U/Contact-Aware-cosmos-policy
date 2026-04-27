@@ -95,28 +95,225 @@ build the matching aarch64 version yourself.
 
 ---
 
-## Path C — pure conda env (most isolated)
+## Path C — pure conda env (most isolated, recommended for first GH200 run)
 
-If you don't want uv on the cluster at all (some cluster admins have
-strong opinions). Everything via conda + pip.
+Single-tool flow: conda manages Python, CUDA, and Python packages; uv is
+not used on the cluster at all. Diverges most from local dev (`pyproject.toml`
+is no longer the source of truth here), but is the most predictable on
+HPC clusters where you don't control the system CUDA layout.
+
+The walkthrough below assumes a typical SLURM HPC cluster with persistent
+shared scratch and tmpfs `$HOME`. Replace `<...>` placeholders.
+
+### C.1 Prereqs
 
 ```bash
-conda create -n cosmos-policy -c nvidia -c conda-forge \
-    python=3.10 cuda-toolkit=12.8 cudnn ninja pybind11
-conda activate cosmos-policy
+# Are conda/mamba already on the cluster?
+which conda mamba micromamba
+module avail anaconda 2>&1 | head     # SLURM clusters often module-load it
+```
 
-cd Contact-Aware-cosmos-policy
+If a cluster-managed conda is available (`module load anaconda`), use it.
+Otherwise install miniforge to **persistent scratch** (NOT `$HOME` — that's
+likely tmpfs and will vanish between jobs):
+
+```bash
+PERSIST=<persistent-scratch>          # e.g. /data/clear/<user>
+CONDA_DIR=$PERSIST/miniforge3
+curl -L -o /tmp/miniforge.sh \
+    https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh
+bash /tmp/miniforge.sh -b -p $CONDA_DIR
+source $CONDA_DIR/etc/profile.d/conda.sh
+# Persist activation in shell profile (or your sbatch script):
+echo "source $CONDA_DIR/etc/profile.d/conda.sh" >> ~/.bashrc
+```
+
+### C.2 Create env on persistent scratch
+
+Don't let conda put the env under `$HOME` if `$HOME` is tmpfs — use
+`--prefix` to land it in shared scratch.
+
+```bash
+PERSIST=<persistent-scratch>
+ENV_PREFIX=$PERSIST/envs/cosmos-policy
+
+mamba create --prefix $ENV_PREFIX -c nvidia -c conda-forge -y \
+    python=3.10 cuda-toolkit=12.8 cudnn ninja pybind11 git
+
+conda activate $ENV_PREFIX
+
+# Verify
+nvcc --version            # should report 12.8
+echo $CUDA_HOME           # should point inside $ENV_PREFIX
+which python              # should be $ENV_PREFIX/bin/python
+```
+
+If you prefer named envs over `--prefix`, configure conda's env path first:
+```bash
+conda config --add envs_dirs $PERSIST/envs
+mamba create -n cosmos-policy ...     # then conda activate cosmos-policy
+```
+
+### C.3 Install Python dependencies
+
+```bash
+cd <repo>/Contact-Aware-cosmos-policy
+
+# 1. PyTorch with CUDA 12.8 (aarch64 wheels available for torch >= 2.4)
 pip install --index-url https://download.pytorch.org/whl/cu128 \
     torch==2.7.0 torchvision torchaudio
-pip install transformer-engine-cu12
+
+python -c "import torch; assert torch.cuda.is_available(); \
+           print(torch.__version__, torch.version.cuda, torch.cuda.get_device_name(0))"
+
+# 2. TransformerEngine — try the prebuilt cu12 wheel first
+pip install transformer-engine-cu12 || {
+    echo "Prebuilt TE wheel not available for this platform; building from source"
+    pip install --no-build-isolation transformer_engine[pytorch]
+}
+python -c "import transformer_engine.pytorch as te; print('TE OK')"
+
+# 3. cosmos_policy itself + LIBERO sim deps
 pip install -e .
 pip install libero bddl easydict draccus 'mujoco==3.3.2' \
             cloudpickle gym 'imageio[ffmpeg]'
-pip install --no-build-isolation flash-attn==2.7.3
+
+# 4. flash-attn (no aarch64 prebuilt; build from source against conda CUDA)
+#    MAX_JOBS throttles parallel compilation — set to half your core count
+#    to avoid OOM on shared login nodes. Build takes 10–30 min.
+MAX_JOBS=4 pip install --no-build-isolation flash-attn==2.7.3
+
+# 5. Other commonly needed packages cosmos-policy imports
+pip install megatron-core wandb hydra-core omegaconf
 ```
 
-Diverges most from local dev — `pyproject.toml` is no longer the source
-of truth — but is the simplest single-tool flow.
+After every step you should be able to import without errors. If an
+import surfaces a missing module, install it with `pip install <pkg>` —
+cosmos-policy's `pyproject.toml` is the canonical list to consult.
+
+### C.4 HF auth (one-time per user)
+
+The `nvidia/Cosmos-Predict2-2B-Video2World` checkpoint is gated. Run
+`huggingface-cli login` once on a login node with internet:
+
+```bash
+huggingface-cli login         # paste a read token from https://huggingface.co/settings/tokens
+# Pre-cache the gated checkpoint in persistent scratch to avoid mid-job downloads:
+export HF_HOME=$PERSIST/hf_cache
+huggingface-cli download nvidia/Cosmos-Predict2-2B-Video2World model-480p-16fps.pt
+huggingface-cli download nvidia/Cosmos-Policy-LIBERO-Predict2-2B
+```
+
+Persist `HF_HOME` in your shell profile / sbatch script — by default HF
+caches into `$HOME/.cache` which on tmpfs vanishes between jobs.
+
+### C.5 wandb (optional but training configs reference it)
+
+```bash
+wandb login                   # paste API key from https://wandb.ai/authorize
+# Or disable: export WANDB_MODE=disabled in your sbatch script
+```
+
+### C.6 Data prep (winedrawer experiment)
+
+```bash
+export BASE_DATASETS_DIR=$PERSIST/cosmos-policy-data
+export LIBERO_DATA_ROOT=$BASE_DATASETS_DIR/libero_raw/libero_90
+
+# One-time: download libero_90 demos
+mkdir -p $BASE_DATASETS_DIR/libero_raw && cd $BASE_DATASETS_DIR/libero_raw
+huggingface-cli download yifengzhu-hf/LIBERO-datasets --repo-type dataset \
+    --include "libero_90/*" --local-dir .
+
+# Single-task prep
+cd <repo>
+PY=python bash contact_aware_wm/prepare_libero90_winedrawer.sh
+```
+
+### C.7 Smoke test before launching long training
+
+```bash
+# Minimal: import path resolution + 1-step training
+cd <repo>
+BASE_DATASETS_DIR=$PERSIST/cosmos-policy-data \
+LIBERO_DATA_ROOT=$LIBERO_DATA_ROOT \
+torchrun --nproc_per_node=1 -m cosmos_policy.scripts.train \
+    --config=cosmos_policy/config/config.py \
+    -- experiment=cosmos_predict2_2b_480p_libero90_winedrawer_v_full \
+    trainer.max_iter=2 trainer.callbacks.compile_tokenizer.enabled=False
+```
+
+If that completes 2 iterations, you're good. Then bump `max_iter` back to 20000.
+
+### C.8 Sample SLURM sbatch script
+
+Save as `slurm_train_winedrawer.sbatch` next to your data:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=cosmos-winedrawer
+#SBATCH --partition=<YOUR_PARTITION>
+#SBATCH --account=<YOUR_ACCOUNT>
+#SBATCH --nodes=1
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=72:00:00            # 20k iters at batch=8 — adjust
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
+
+set -euo pipefail
+
+# Activate conda env
+PERSIST=<persistent-scratch>
+source $PERSIST/miniforge3/etc/profile.d/conda.sh
+conda activate $PERSIST/envs/cosmos-policy
+
+# Persistent caches (avoid tmpfs $HOME)
+export HF_HOME=$PERSIST/hf_cache
+export TRITON_CACHE_DIR=$PERSIST/triton_cache
+export TORCH_EXTENSIONS_DIR=$PERSIST/torch_ext_cache
+mkdir -p $HF_HOME $TRITON_CACHE_DIR $TORCH_EXTENSIONS_DIR
+
+# Project paths
+cd $PERSIST/Contact-Aware-cosmos-policy
+export BASE_DATASETS_DIR=$PERSIST/cosmos-policy-data
+export LIBERO_DATA_ROOT=$BASE_DATASETS_DIR/libero_raw/libero_90
+
+# Pick V or V+F:
+EXPERIMENT=cosmos_predict2_2b_480p_libero90_winedrawer_v_full
+# EXPERIMENT=cosmos_predict2_2b_480p_libero90_winedrawer_vf_full
+
+torchrun --nproc_per_node=1 \
+    -m cosmos_policy.scripts.train \
+    --config=cosmos_policy/config/config.py \
+    -- experiment=$EXPERIMENT
+```
+
+Submit:
+```bash
+mkdir -p logs && sbatch slurm_train_winedrawer.sbatch
+squeue -u $USER
+tail -f logs/cosmos-winedrawer-<jobid>.out
+```
+
+### C.9 Path-C-specific gotchas
+
+- **Don't use `pip install` from outside the activated env** — it'll silently
+  install into a different python. Always check `which pip` reports the
+  conda env path first.
+- **mamba/conda channel priority**: if you see "package not found" errors,
+  prepend `-c nvidia -c conda-forge` to the create/install commands so
+  the NVIDIA channel is checked first for CUDA components.
+- **`pip install -e .` and a stale `.venv/` from a prior uv attempt**:
+  delete `.venv/` and `uv.lock`-related caches before running pip in the
+  conda env, or pip may resolve against the wrong site-packages.
+- **`flash-attn` build OOM**: cap `MAX_JOBS=4` (or fewer); the default
+  spawns one compile job per core which can OOM on shared login nodes.
+- **No internet on compute nodes**: many clusters firewall outbound from
+  compute nodes. Pre-stage HF checkpoints (C.4) and any pip packages
+  on a login node before submitting jobs. Set `HF_HUB_OFFLINE=1` and
+  `WANDB_MODE=offline` in the sbatch script if applicable.
 
 ---
 
