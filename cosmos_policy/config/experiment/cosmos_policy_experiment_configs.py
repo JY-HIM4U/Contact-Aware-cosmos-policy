@@ -1445,6 +1445,24 @@ _LIBERO90_WINEDRAWER_DATA_DIR = os.path.join(BASE_DATASETS_DIR, "LIBERO-Cosmos-P
 _LIBERO90_WINEDRAWER_FT_DIR = os.path.join(BASE_DATASETS_DIR, "libero_90_winedrawer_with_ft")
 _COSMOS_PREDICT2_BASE_CKPT = "hf://nvidia/Cosmos-Predict2-2B-Video2World/model-480p-16fps.pt"
 
+
+def _resolve_cosmos_predict2_base_ckpt_lazy():
+    """Resolve the gated Cosmos-Predict2 base ckpt URI, but do not fail at import.
+
+    The HF repo is gated; on machines without HF auth the resolve raises
+    GatedRepoError. We don't want that to break loading *other* experiment
+    configs in this module, so defer the failure until the cosmos-predict-base
+    experiments are actually used. The cluster (where we run these) has auth.
+    """
+    try:
+        return get_checkpoint_path(_COSMOS_PREDICT2_BASE_CKPT)
+    except Exception as exc:
+        log.warning(
+            f"Could not resolve {_COSMOS_PREDICT2_BASE_CKPT} at config load time: {exc}. "
+            "Passing URI through; training will fail later if the runtime env also lacks access."
+        )
+        return _COSMOS_PREDICT2_BASE_CKPT
+
 libero90_winedrawer_dataset_v = L(LIBERODataset)(
     data_dir=_LIBERO90_WINEDRAWER_DATA_DIR,
     t5_text_embeddings_path=os.path.join(
@@ -1502,7 +1520,7 @@ cosmos_predict2_2b_480p_libero90_winedrawer_v_full = LazyDict(
             ),
         ),
         checkpoint=dict(
-            load_path=get_checkpoint_path(_COSMOS_PREDICT2_BASE_CKPT),
+            load_path=_resolve_cosmos_predict2_base_ckpt_lazy(),
         ),
         model=L(CosmosPolicyVideo2WorldModel)(
             config=dict(
@@ -1564,7 +1582,7 @@ cosmos_predict2_2b_480p_libero90_winedrawer_vf_full = LazyDict(
             ),
         ),
         checkpoint=dict(
-            load_path=get_checkpoint_path(_COSMOS_PREDICT2_BASE_CKPT),
+            load_path=_resolve_cosmos_predict2_base_ckpt_lazy(),
         ),
         model=L(CosmosPolicyVideo2WorldModel)(
             config=dict(
